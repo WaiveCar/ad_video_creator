@@ -59,7 +59,7 @@ async def main():
 
             logger.info('Setting device emulation')
             await emulation.set_device_metrics_override(
-                width=1920, height=720, device_scale_factor=1, mobile=False
+                width=1440, height=720, device_scale_factor=1, mobile=False
             )
 
             logger.info('Enabling page events')
@@ -73,7 +73,12 @@ async def main():
 
             await page.start_screencast(format_='png', every_nth_frame=1)
             
+            page_reloaded = False
             async for sc_data in session.listen(page.ScreencastFrame):
+              if not page_reloaded:
+                page.reload()
+                page_reloaded = True
+                continue
               #err_data = sc_data
               frames.append(sc_data)
               logger.info('Saved frame to memory')
@@ -82,10 +87,10 @@ async def main():
 def save_frames(frames):
   i = 0
   last_frame_time = None
-  with open('output/frames.txt', 'w') as frames_list:
+  with open('/tmp/frames.txt', 'w') as frames_list:
     for f in frames:
-      image_name = 'output/frame-{:02}.png'.format(i)
-      frame_duration = f.metadata.timestamp - last_frame_time if last_frame_time is not None else 1
+      image_name = '/tmp/frame-{:02}.png'.format(i)
+      frame_duration = f.metadata.timestamp - last_frame_time if last_frame_time is not None else 1/60
       with open(image_name, 'wb') as frame_image:
         frame_image.write(b64decode(f.data))
       frames_list.write("file '{}'\nduration {}\n".format(image_name.split('/')[-1], frame_duration))
@@ -94,7 +99,7 @@ def save_frames(frames):
 
 def make_mp4():
   subprocess.run(['ffmpeg', '-y', '-f', 'concat',
-                  '-i', 'output/frames.txt',
+                  '-i', '/tmp/frames.txt',
                   '-vf', 'fps=60',
                   '-c:v', 'libx264',
                   '-pix_fmt', 'yuv420p',
