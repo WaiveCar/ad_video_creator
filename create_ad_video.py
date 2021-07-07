@@ -1,32 +1,46 @@
-'''
-Make a screenshot of a target web page.
-
-To use this example, start Chrome (or any other browser that supports CDP) with
-the option `--remote-debugging-port=9000`. The URL that Chrome is listening on
-is displayed in the terminal after Chrome starts up.
-
-Then run this script with the Chrome URL as the first argument and the target
-website URL as the second argument:
-
-$ python examples/screenshot.py \
-    ws://localhost:9000/devtools/browser/facfb2295-... \
-    https://www.hyperiongray.com
-'''
 from base64 import b64decode
-import logging
-import os
-import sys
-import subprocess
-
+from urllib.parse import urlsplit
+import logging, os, sys, time, subprocess, argparse
 import requests
 import trio
 from trio_cdp import open_cdp, emulation, page, target
 
-
-log_level = os.environ.get('LOG_LEVEL', 'info').upper()
+log_level = 'INFO'
 logging.basicConfig(level=getattr(logging, log_level))
-logger = logging.getLogger('screenshot')
+logger = logging.getLogger('create_ad_video')
 logging.getLogger('trio-websocket').setLevel(logging.WARNING)
+
+frames = []
+
+def parse_args():
+  parser = argparse.ArgumentParser(description="Generate a video of the given URL")
+  parser.add_argument("-W", "--width", type=int, 
+                      help="browser/video width",
+                      default=1920)
+  parser.add_argument("-H", "--height", type=int, 
+                      help="browser/video height",
+                      default=1080)
+  parser.add_argument("-F", "--fps", type=float, 
+                      help="video FPS",
+                      default=60.0)
+  parser.add_argument("-f", "--first", type=float, 
+                      help="first frame time (secs)",
+                      default=0.3)
+  parser.add_argument("-l", "--last", type=float, 
+                      help="last frame time (secs)",
+                      default=None)
+  parser.add_argument("-O", "--output",
+                      help="name of video file (.mp4 suffix will be added)",
+                      default=None)
+  parser.add_argument("-D", "--dir",
+                      help="directory to save video file into",
+                      default="output")
+  parser.add_argument("-v", "--verbose", action="store_true")
+  parser.add_argument("-C", "--cdb_host_port",
+                      help="Chrome DevTools host:port",
+                      default="127.0.0.1:9222")
+  parser.add_argument("url", help="URL to convert to a video")
+  return parser.parse_args()
 
 def get_ws_debugger_url(host_and_port):
   r = requests.get('http://{}/json/version'.format(host_and_port))
@@ -34,7 +48,7 @@ def get_ws_debugger_url(host_and_port):
   return j.get('webSocketDebuggerUrl')
 
 async def capture_screencast(session):
-  global frames
+  global frames, page_load_time
 
   async def wait_for_page_load(cancel_scope):
     frame_count = len(frames)
@@ -48,13 +62,7 @@ async def capture_screencast(session):
         frame_count = len(frames)
   
   async def frame_saver():
-    page_reloaded = False
     async for sc_data in session.listen(page.ScreencastFrame):
-      if not page_reloaded:
-        await page.reload()
-        page_reloaded = True
-        continue
-      #err_data = sc_data
       frames.append(sc_data)
       logger.info('Saved frame to memory')
       await page.screencast_frame_ack(sc_data.session_id)
@@ -64,14 +72,23 @@ async def capture_screencast(session):
   async with trio.open_nursery() as nursery:
     nursery.start_soon(wait_for_page_load, nursery.cancel_scope)
     nursery.start_soon(frame_saver)
+    
+    logger.info('Navigating to %s', args.url)
+    async with session.wait_for(page.LoadEventFired):
+      await page.navigate(url=args.url)
+      page_load_time = time.time()
 
-def save_frames(frames):
+
+def write_frames(frames):
   i = 0
   last_frame_time = None
   with open('/tmp/frames.txt', 'w') as frames_list:
     for f in frames:
-      image_name = '/tmp/frame-{:02}.png'.format(i)
-      frame_duration = f.metadata.timestamp - last_frame_time if last_frame_time is not None else 1/60
+      image_name = '/tmp/frame-{:03}.png'.format(i)
+      if args.last is not None and i == len(frames) - 1:
+        frame_duration = args.last
+      else:
+        frame_duration = f.metadata.timestamp - last_frame_time if last_frame_time is not None else args.first
       with open(image_name, 'wb') as frame_image:
         frame_image.write(b64decode(f.data))
       frames_list.write("file '{}'\nduration {}\n".format(image_name.split('/')[-1], frame_duration))
@@ -79,18 +96,21 @@ def save_frames(frames):
       last_frame_time = f.metadata.timestamp
 
 def make_mp4():
+  if args.output is None:
+    vid_name = '{}-{}.mp4'.format(urlsplit(args.url).netloc,
+                                time.strftime('%Y%m%d_%H%M%S'))
+  else:
+    vid_name = args.ouput
   subprocess.run(['ffmpeg', '-y', '-f', 'concat',
                   '-i', '/tmp/frames.txt',
-                  '-vf', 'fps=60',
+                  '-vf', 'fps={}'.format(args.fps),
                   '-c:v', 'libx264',
                   '-pix_fmt', 'yuv420p',
-                  'output/video.mp4'])
+                  '{}/{}'.format(args.dir, vid_name)])
 
 async def main():
-  global err_data, ack_data, frames
-  frames = []
 
-  ws_debugger_url = get_ws_debugger_url(sys.argv[1])
+  ws_debugger_url = get_ws_debugger_url(args.cdb_host_port)
   logger.info('Connecting to browser: %s', ws_debugger_url)
  
   async with open_cdp(ws_debugger_url) as conn:
@@ -98,39 +118,31 @@ async def main():
     targets = await target.get_targets()
 
     for t in targets:
-      try:
-        if (t.type_ == 'page' and
-          not t.url.startswith('devtools://') and
-          not t.attached):
-          target_id = t.target_id
-          break
-      except:
-        global error_t
-        error_t = targets
-        raise
+      if ( t.type_ == 'page' and
+           not t.url.startswith('devtools://') and
+           not t.attached
+         ):
+        target_id = t.target_id
+        break
 
     logger.info('Attaching to target id=%s', target_id)
     async with conn.open_session(target_id) as session:
 
       logger.info('Setting device emulation')
       await emulation.set_device_metrics_override(
-          width=1920, height=1080, device_scale_factor=1, mobile=False
+          width=args.width, height=args.height, device_scale_factor=1, mobile=False
       )
 
       logger.info('Enabling page events')
       await page.enable()
 
-      logger.info('Navigating to %s', sys.argv[2])
-      async with session.wait_for(page.LoadEventFired):
-          await page.navigate(url=sys.argv[2])
-
       await capture_screencast(session)
 
-    save_frames(frames)
+    write_frames(frames)
     make_mp4()
 
 if __name__ == '__main__':
-  if len(sys.argv) != 3:
-    sys.stderr.write('Usage: screenshot.py <host:port> <target url>')
-    sys.exit(1)
+  global args
+  args = parse_args()
+  logger.info('ARGS: {}'.format(args))
   trio.run(main, restrict_keyboard_interrupt_to_checkpoints=True)

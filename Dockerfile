@@ -13,5 +13,4 @@ COPY ./create_ad_video.py ./start.sh ./
 
 VOLUME /app/output
 
-#ENTRYPOINT ["/headless-shell/headless-shell", "&&", "python3", "-i", "./create_ad_video.py", "localhost:9222"]
 ENTRYPOINT ["./start.sh"]
