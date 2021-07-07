@@ -2,6 +2,11 @@
 
         mkdir output
 
+        # If you want to run the script locally
+        python3 -m venv .venv
+        . .venv/bin/activate
+        pip3 install -r requirements.txt
+
 ## Running within Docker:
 
         docker build -t ad_video_creator .
