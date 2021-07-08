@@ -23,6 +23,9 @@ def parse_args():
   parser.add_argument("-F", "--fps", type=float, 
                       help="video FPS",
                       default=60.0)
+  parser.add_argument("-T", "--time", type=float,
+                      help="Max capture time",
+                      default=30.0)
   parser.add_argument("-f", "--first", type=float, 
                       help="first frame time (secs)",
                       default=0.3)
@@ -51,14 +54,15 @@ async def capture_screencast(session):
 
   async def wait_for_page_load(cancel_scope):
     frame_count = len(frames)
-    while True:
-      await trio.sleep(2)
+    while time.time() < page_load_time + args.time:
+      await trio.sleep(1)
       if frame_count == len(frames):
-        logger.info("No frames for 2 seconds.")
-        await page.stop_screencast()
-        cancel_scope.cancel()
+        logger.info("No frames for 1 second.")
+        break
       else:
         frame_count = len(frames)
+    await page.stop_screencast()
+    cancel_scope.cancel()
   
   async def frame_saver():
     async for sc_data in session.listen(page.ScreencastFrame):
@@ -69,14 +73,15 @@ async def capture_screencast(session):
   logger.info('Starting Screencast')
   await page.start_screencast(format_='png', every_nth_frame=1)
   async with trio.open_nursery() as nursery:
-    nursery.start_soon(wait_for_page_load, nursery.cancel_scope)
     
     logger.info('Navigating to %s', args.url)
     async with session.wait_for(page.LoadEventFired):
       nursery.start_soon(frame_saver)
+
       await page.navigate(url=args.url)
       page_load_time = time.time()
 
+      nursery.start_soon(wait_for_page_load, nursery.cancel_scope)
 
 def write_frames(frames):
   i = 1
