@@ -35,7 +35,6 @@ def parse_args():
   parser.add_argument("-D", "--dir",
                       help="directory to save video file into",
                       default="output")
-  parser.add_argument("-v", "--verbose", action="store_true")
   parser.add_argument("-C", "--cdb_host_port",
                       help="Chrome DevTools host:port",
                       default="127.0.0.1:9222")
@@ -71,42 +70,47 @@ async def capture_screencast(session):
   await page.start_screencast(format_='png', every_nth_frame=1)
   async with trio.open_nursery() as nursery:
     nursery.start_soon(wait_for_page_load, nursery.cancel_scope)
-    nursery.start_soon(frame_saver)
     
     logger.info('Navigating to %s', args.url)
     async with session.wait_for(page.LoadEventFired):
+      nursery.start_soon(frame_saver)
       await page.navigate(url=args.url)
       page_load_time = time.time()
 
 
 def write_frames(frames):
-  i = 0
+  i = 1
   last_frame_time = None
   with open('/tmp/frames.txt', 'w') as frames_list:
-    for f in frames:
+    for f in sorted(frames, key=lambda x: x.metadata.timestamp):
+      if f.metadata.timestamp < page_load_time:
+        i += 1
+        continue
       image_name = '/tmp/frame-{:03}.png'.format(i)
-      if args.last is not None and i == len(frames) - 1:
+      if args.last is not None and i == len(frames):
         frame_duration = args.last
       else:
         frame_duration = f.metadata.timestamp - last_frame_time if last_frame_time is not None else args.first
       with open(image_name, 'wb') as frame_image:
         frame_image.write(b64decode(f.data))
       frames_list.write("file '{}'\nduration {}\n".format(image_name.split('/')[-1], frame_duration))
+      if i == len(frames):
+        frames_list.write("file '{}'\n".format(image_name.split('/')[-1]))
       i += 1
       last_frame_time = f.metadata.timestamp
 
 def make_mp4():
   if args.output is None:
-    vid_name = '{}-{}.mp4'.format(urlsplit(args.url).netloc,
+    vid_name = '{}-{}'.format(urlsplit(args.url).netloc,
                                 time.strftime('%Y%m%d_%H%M%S'))
   else:
-    vid_name = args.ouput
+    vid_name = args.output
   subprocess.run(['ffmpeg', '-y', '-f', 'concat',
                   '-i', '/tmp/frames.txt',
                   '-vf', 'fps={}'.format(args.fps),
-                  '-c:v', 'libx264',
                   '-pix_fmt', 'yuv420p',
-                  '{}/{}'.format(args.dir, vid_name)])
+                  '-c:v', 'libx264',
+                  '{}/{}.mp4'.format(args.dir, vid_name)])
 
 async def main():
 
