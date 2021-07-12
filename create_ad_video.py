@@ -113,6 +113,8 @@ def make_mp4():
   subprocess.run(['ffmpeg', '-y', '-f', 'concat',
                   '-i', '/tmp/frames.txt',
                   '-vf', 'fps={}'.format(args.fps),
+                  # Interpolate frames (looks better, but takes longer)
+                  #'-vf', 'minterpolate=fps={}:mi_mode=mci'.format(args.fps),
                   '-pix_fmt', 'yuv420p',
                   '-c:v', 'libx264',
                   '{}/{}.mp4'.format(args.dir, vid_name)])
